@@ -1,0 +1,428 @@
+// prisma/schema.prisma
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+// ========== ENUMS ==========
+enum BusinessCategory {
+  HOSPITAL
+  SUPERMARKET
+  RESTAURANT
+  ELECTRONICS
+}
+
+enum UserRole {
+  PLATFORM_ADMIN
+  BUSINESS_OWNER
+  MANAGER
+  CASHIER
+  DOCTOR
+  STAFF
+  CUSTOMER
+}
+
+enum OrderStatus {
+  PENDING
+  CONFIRMED
+  PREPARING
+  READY_FOR_PICKUP
+  OUT_FOR_DELIVERY
+  DELIVERED
+  CANCELLED
+  REFUNDED
+}
+
+enum AppointmentStatus {
+  PENDING
+  CONFIRMED
+  IN_PROGRESS
+  COMPLETED
+  CANCELLED
+  NO_SHOW
+}
+
+enum PaymentStatus {
+  UNPAID
+  PAID
+  REFUNDED
+  PARTIALLY_PAID
+}
+
+enum InventoryTransactionType {
+  SALE
+  PURCHASE
+  ADJUSTMENT
+  RETURN
+  WASTAGE
+}
+
+// ========== MULTI-TENANT CORE ==========
+model Business {
+  id              String          @id @default(cuid())
+  slug            String          @unique
+  name            Json
+  category        BusinessCategory
+  logo            String?
+  coverImage      String?
+  contactEmail    String?
+  contactPhone    String?
+  address         Json?
+  timezone        String          @default("UTC")
+  currencyCode    String          @default("USD")
+  isActive        Boolean         @default(true)
+  settings        Json?
+  createdAt       DateTime        @default(now())
+  updatedAt       DateTime        @updatedAt
+
+  users           User[]
+  products        Product[]          // inventory items
+  orders          Order[]
+  appointments    Appointment[]
+  services        Service[]
+  suppliers       Supplier[]
+  payrolls        Payroll[]
+  tasks           Task[]
+  ledgerEntries   LedgerEntry[]
+  productCategories ProductCategory[]
+  purchaseOrders  PurchaseOrder[]
+  notificationLogs NotificationLog[]
+  counters        BusinessCounter[]    // For Product Inventory
+
+  @@index([category])
+  @@index([slug])
+}
+
+// ========== USER & RBAC ==========
+model User {
+  id                String          @id @default(cuid())
+  email             String          @unique
+  phone             String?         @unique
+  passwordHash      String
+  fullName          Json
+  avatar            String?
+  role              UserRole
+  isActive          Boolean         @default(true)
+  lastLoginAt       DateTime?
+  createdAt         DateTime        @default(now())
+  updatedAt         DateTime        @updatedAt
+
+  businessId        String?
+  business          Business?       @relation(fields: [businessId], references: [id], onDelete: Cascade)
+
+  managedTasks      Task[]          @relation("AssignedTasks")
+  payrollRecords    Payroll[]
+  createdOrders     Order[]         @relation("CreatedByUser")
+  processedPOS      Order[]         @relation("ProcessedByUser")
+  doctorAppointments Appointment[]  @relation("DoctorAppointments")
+  inventoryTransactionsCreated InventoryTransaction[] @relation("InventoryCreatedBy")
+
+  @@unique([businessId, email])
+  @@index([businessId, role])
+}
+
+// ========== PRODUCT CATEGORIES (for CatalogProduct) ==========
+model ProductCategory {
+  id          String    @id @default(cuid())
+  businessId  String
+  business    Business  @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  name        Json
+  slug        String
+  parentId    String?   @map("parent_id")
+  parent      ProductCategory? @relation("ProductSubcategories", fields: [parentId], references: [id])
+  children    ProductCategory[] @relation("ProductSubcategories")
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  // REMOVE this line: catalogProducts CatalogProduct[]
+  // We no longer need it because CatalogProduct uses a direct enum category
+
+  @@unique([businessId, slug])
+  @@index([businessId])
+}
+
+// ========== GLOBAL CATALOG PRODUCT ==========
+model CatalogProduct {
+  id          String    @id @default(cuid())
+  barcode     String    @unique
+  name        Json
+  description Json?
+  category    BusinessCategory   // 👈 add this line (enum)
+  images      String[]   @default([])
+  isActive    Boolean   @default(true)
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  inventory   Product[]
+}
+
+model BusinessCounter {
+  businessId     String   @id
+  business       Business @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  nextProductSku Int      @default(1001)
+}
+
+
+
+// ========== MERCHANT INVENTORY (LINKED TO CATALOG) ==========
+model Product {
+  id                String      @id @default(cuid())
+  catalogProductId  String
+  catalogProduct    CatalogProduct @relation(fields: [catalogProductId], references: [id], onDelete: Cascade)
+  businessId        String
+  business          Business    @relation(fields: [businessId], references: [id], onDelete: Cascade)
+
+  // Merchant‑specific fields
+  costPrice         Decimal     @db.Decimal(10,2)
+  sellingPrice      Decimal     @db.Decimal(10,2)
+  stockQuantity     Int         @default(0)
+  availableOnline   Boolean     @default(true)
+  posOnly           Boolean     @default(false)
+  sku               String      @unique
+  isActive          Boolean     @default(true)
+
+  createdAt         DateTime    @default(now())
+  updatedAt         DateTime    @updatedAt
+
+  orderItems        OrderItem[]
+  inventoryTransactions InventoryTransaction[]
+
+  @@unique([businessId, sku])
+  @@index([businessId, catalogProductId])
+}
+
+// ========== ORDER MANAGEMENT ==========
+model Order {
+  id                String          @id @default(cuid())
+  businessId        String
+  business          Business        @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  orderNumber       String          @unique
+  source            String
+  customerName      String?
+  customerEmail     String?
+  customerPhone     String?
+  customerAddress   Json?
+  status            OrderStatus     @default(PENDING)
+  paymentStatus     PaymentStatus   @default(UNPAID)
+  subtotal          Decimal         @db.Decimal(10,2)
+  tax               Decimal         @db.Decimal(10,2) @default(0)
+  deliveryFee       Decimal         @db.Decimal(10,2) @default(0)
+  discount          Decimal         @db.Decimal(10,2) @default(0)
+  total             Decimal         @db.Decimal(10,2)
+  notes             String?
+  createdAt         DateTime        @default(now())
+  updatedAt         DateTime        @updatedAt
+  completedAt       DateTime?
+
+  createdByUserId   String?
+  createdBy         User?           @relation("CreatedByUser", fields: [createdByUserId], references: [id])
+  processedByUserId String?
+  processedBy       User?           @relation("ProcessedByUser", fields: [processedByUserId], references: [id])
+
+  orderItems        OrderItem[]
+  payment           Payment?
+
+  @@index([businessId, status])
+  @@index([businessId, createdAt(sort: Desc)])
+  @@index([orderNumber])
+}
+
+model OrderItem {
+  id          String    @id @default(cuid())
+  orderId     String
+  order       Order     @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  productId   String
+  product     Product   @relation(fields: [productId], references: [id])
+  quantity    Int
+  unitPrice   Decimal   @db.Decimal(10,2)
+  total       Decimal   @db.Decimal(10,2)
+
+  @@index([orderId])
+  @@index([productId])
+}
+
+model Payment {
+  id            String        @id @default(cuid())
+  orderId       String        @unique
+  order         Order         @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  amount        Decimal       @db.Decimal(10,2)
+  method        String
+  transactionId String?
+  status        PaymentStatus @default(UNPAID)
+  paidAt        DateTime?
+  createdAt     DateTime      @default(now())
+}
+
+// ========== SERVICE & APPOINTMENT (HOSPITALS) ==========
+model Service {
+  id          String    @id @default(cuid())
+  businessId  String
+  business    Business  @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  name        Json
+  description Json?
+  durationMins Int
+  price       Decimal   @db.Decimal(10,2)
+  isActive    Boolean   @default(true)
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  appointments Appointment[]
+
+  @@index([businessId, isActive])
+}
+
+model Appointment {
+  id              String            @id @default(cuid())
+  businessId      String
+  business        Business          @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  serviceId       String?
+  service         Service?          @relation(fields: [serviceId], references: [id])
+  doctorId        String?
+  doctor          User?             @relation("DoctorAppointments", fields: [doctorId], references: [id])
+  customerName    String
+  customerPhone   String
+  customerEmail   String?
+  startTime       DateTime
+  endTime         DateTime
+  status          AppointmentStatus @default(PENDING)
+  notes           String?
+  createdAt       DateTime          @default(now())
+  updatedAt       DateTime          @updatedAt
+  cancelledAt     DateTime?
+
+  @@unique([businessId, startTime, doctorId])
+  @@index([businessId, startTime])
+  @@index([businessId, status])
+  @@index([doctorId, startTime])
+}
+
+// ========== INVENTORY TRANSACTIONS ==========
+model InventoryTransaction {
+  id          String                 @id @default(cuid())
+  productId   String
+  product     Product                @relation(fields: [productId], references: [id], onDelete: Cascade)
+  businessId  String
+  type        InventoryTransactionType
+  quantity    Int
+  referenceId String?
+  note        String?
+  createdAt   DateTime               @default(now())
+  createdByUserId String?
+  createdBy   User?                  @relation("InventoryCreatedBy", fields: [createdByUserId], references: [id])
+
+  @@index([productId, createdAt(sort: Desc)])
+  @@index([businessId, type])
+}
+
+// ========== SUPPLIER & PURCHASE ORDERS ==========
+model Supplier {
+  id          String    @id @default(cuid())
+  businessId  String
+  business    Business  @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  name        String
+  contactPerson String?
+  email       String?
+  phone       String?
+  address     String?
+  taxNumber   String?
+  isActive    Boolean   @default(true)
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  purchaseOrders PurchaseOrder[]
+
+  @@index([businessId])
+}
+
+model PurchaseOrder {
+  id            String    @id @default(cuid())
+  poNumber      String    @unique
+  businessId    String
+  business      Business  @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  supplierId    String
+  supplier      Supplier  @relation(fields: [supplierId], references: [id])
+  items         Json
+  totalAmount   Decimal   @db.Decimal(10,2)
+  status        String
+  orderedAt     DateTime  @default(now())
+  receivedAt    DateTime?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  @@index([businessId, status])
+}
+
+// ========== BACK-OFFICE ==========
+model Payroll {
+  id          String    @id @default(cuid())
+  businessId  String
+  business    Business  @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  userId      String
+  user        User      @relation(fields: [userId], references: [id])
+  month       DateTime
+  baseSalary  Decimal   @db.Decimal(10,2)
+  bonuses     Decimal   @db.Decimal(10,2) @default(0)
+  deductions  Decimal   @db.Decimal(10,2) @default(0)
+  netPay      Decimal   @db.Decimal(10,2)
+  paidAt      DateTime?
+  status      String
+  notes       String?
+  createdAt   DateTime  @default(now())
+
+  @@unique([businessId, userId, month])
+  @@index([businessId, month])
+}
+
+model Task {
+  id            String    @id @default(cuid())
+  businessId    String
+  business      Business  @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  title         Json
+  description   Json?
+  assignedToId  String?
+  assignedTo    User?     @relation("AssignedTasks", fields: [assignedToId], references: [id])
+  dueDate       DateTime?
+  status        String    @default("PENDING")
+  priority      String    @default("MEDIUM")
+  createdAt     DateTime  @default(now())
+  completedAt   DateTime?
+
+  @@index([businessId, status, dueDate])
+}
+
+model LedgerEntry {
+  id          String    @id @default(cuid())
+  businessId  String
+  business    Business  @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  date        DateTime  @default(now())
+  type        String
+  category    String
+  amount      Decimal   @db.Decimal(10,2)
+  currency    String    @default("USD")
+  referenceId String?
+  description String?
+  createdAt   DateTime  @default(now())
+
+  @@index([businessId, date(sort: Desc)])
+  @@index([businessId, type])
+}
+
+model NotificationLog {
+  id          String    @id @default(cuid())
+  businessId  String
+  business    Business  @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  recipient   String
+  channel     String
+  type        String
+  payload     Json
+  status      String
+  error       String?
+  sentAt      DateTime  @default(now())
+
+  @@index([businessId, sentAt(sort: Desc)])
+}
