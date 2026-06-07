@@ -1,64 +1,61 @@
-"use client";
+import { getServerSession } from "next-auth";
+import { redirect } from "next/navigation";
+import { authOptions } from "@/lib/auth";
+import { prisma } from "@/lib/db/prisma";
+import { AdminOrderList } from "@/components/admin/AdminOrderList";
 
-import { useState } from "react";
-import { useLanguage } from "@/components/providers/language-provider";
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
-import { Switch } from "@/components/ui/switch";
-import { toast } from "sonner";
-import { format } from "date-fns";
+// Helper to extract business name from JSON
+function getBusinessName(name: any): string {
+  if (!name) return "—";
+  if (typeof name === "string") return name;
+  return name.en || name.ar || "—";
+}
 
-export function UserList({ initialUsers }: { initialUsers: any[] }) {
-  const { locale } = useLanguage();
-  const [users, setUsers] = useState(initialUsers);
+// Helper to extract product name from catalog product's name (could be JSON or string)
+function getProductName(name: any): string {
+  if (!name) return "Product";
+  if (typeof name === "string") return name;
+  return name.en || name.ar || "Product";
+}
 
-  const toggleActive = async (userId: string, currentActive: boolean) => {
-    try {
-      const res = await fetch(`/api/admin/users/${userId}`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ isActive: !currentActive }),
-      });
-      if (!res.ok) throw new Error();
-      setUsers(users.map(u => u.id === userId ? { ...u, isActive: !currentActive } : u));
-      toast.success(locale === "ar" ? "تم التحديث" : "Updated");
-    } catch (error) {
-      toast.error("Update failed");
-    }
-  };
+export default async function AdminOrdersPage() {
+  const session = await getServerSession(authOptions);
+  if (!session?.user || session.user.role !== "PLATFORM_ADMIN") {
+    redirect("/auth/login");
+  }
 
-  return (
-    <div className="space-y-6">
-      <h1 className="text-3xl font-bold">{locale === "ar" ? "المستخدمين" : "Users"}</h1>
-      <div className="border rounded-md">
-        <Table>
-          <TableHeader>
-            <TableRow>
-              <TableHead>Email</TableHead>
-              <TableHead>{locale === "ar" ? "الاسم" : "Name"}</TableHead>
-              <TableHead>{locale === "ar" ? "الدور" : "Role"}</TableHead>
-              <TableHead>{locale === "ar" ? "المتجر" : "Business"}</TableHead>
-              <TableHead>{locale === "ar" ? "تاريخ التسجيل" : "Created"}</TableHead>
-              <TableHead>{locale === "ar" ? "الحالة" : "Status"}</TableHead>
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {users.map(user => (
-              <TableRow key={user.id}>
-                <TableCell>{user.email}</TableCell>
-                <TableCell>{user.fullName || "-"}</TableCell>
-                <TableCell><Badge variant="outline">{user.role}</Badge></TableCell>
-                <TableCell>{user.businessName || "-"}</TableCell>
-                <TableCell>{format(new Date(user.createdAt), "dd/MM/yyyy")}</TableCell>
-                <TableCell>
-                  <Switch checked={user.isActive} onCheckedChange={() => toggleActive(user.id, user.isActive)} />
-                </TableCell>
-              </TableRow>
-            ))}
-          </TableBody>
-        </Table>
-      </div>
-    </div>
-  );
+  const orders = await prisma.order.findMany({
+    include: {
+      business: { select: { name: true, slug: true } },
+      orderItems: {
+        include: {
+          product: {
+            include: { catalogProduct: { select: { name: true } } }
+          }
+        }
+      },
+    },
+    orderBy: { createdAt: "desc" },
+    take: 200,
+  });
+
+  const ordersForClient = orders.map(order => ({
+    id: order.id,
+    orderNumber: order.orderNumber,
+    businessName: getBusinessName(order.business?.name),
+    businessSlug: order.business?.slug,
+    customerName: order.customerName || "Guest",
+    total: Number(order.total),
+    status: order.status,
+    createdAt: order.createdAt.toISOString(),
+    orderItems: order.orderItems.map(item => ({
+      id: item.id,
+      quantity: item.quantity,
+      unitPrice: Number(item.unitPrice),
+      total: Number(item.total),
+      productName: getProductName(item.product.catalogProduct.name),
+    })),
+  }));
+
+  return <AdminOrderList orders={ordersForClient} />;
 }
