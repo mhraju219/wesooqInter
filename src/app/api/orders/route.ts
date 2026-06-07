@@ -1,10 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { prisma } from '@/lib/db/prisma';
 import { getServerSession } from 'next-auth';
-import { authOptions } from '@/app/api/auth/[...nextauth]/route';
+import { authOptions } from '@/lib/auth';
+import { prisma } from '@/lib/db/prisma';
 import { OrderStatus, PaymentStatus, InventoryTransactionType } from '@prisma/client';
 
-// Helper to generate unique order number
 async function generateOrderNumber(): Promise<string> {
   const prefix = 'ORD';
   const date = new Date().toISOString().slice(0, 10).replace(/-/g, '');
@@ -14,6 +13,11 @@ async function generateOrderNumber(): Promise<string> {
 
 export async function POST(req: NextRequest) {
   try {
+    const session = await getServerSession(authOptions);
+    if (!session?.user) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+
     const body = await req.json();
     const { items, customerName, customerEmail, customerPhone, customerAddress } = body;
 
@@ -24,18 +28,16 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'Name and phone are required' }, { status: 400 });
     }
 
-    // Get all product IDs from cart
     const productIds = items.map((i: any) => i.productId);
     const products = await prisma.product.findMany({
       where: { id: { in: productIds } },
-      select: { id: true, stockQuantity: true, price: true, businessId: true },
+      select: { id: true, stockQuantity: true, sellingPrice: true, businessId: true },
     });
 
     if (products.length !== productIds.length) {
       return NextResponse.json({ error: 'Some products not found' }, { status: 400 });
     }
 
-    // Validate stock and calculate totals
     let subtotal = 0;
     const orderItemsData: any[] = [];
     const inventoryUpdates: any[] = [];
@@ -51,24 +53,23 @@ export async function POST(req: NextRequest) {
         );
       }
 
-      const itemTotal = product.price.toNumber() * cartItem.quantity;
+      const itemTotal = Number(product.sellingPrice) * cartItem.quantity;
       subtotal += itemTotal;
 
       orderItemsData.push({
         productId: cartItem.productId,
         quantity: cartItem.quantity,
-        unitPrice: product.price,
+        unitPrice: product.sellingPrice,
         total: itemTotal,
       });
 
       inventoryUpdates.push({
         productId: cartItem.productId,
-        quantity: -cartItem.quantity, // negative for sale
+        quantity: -cartItem.quantity,
         type: InventoryTransactionType.SALE,
       });
     }
 
-    // Determine businessId (all products must belong to same business)
     const businessIds = [...new Set(products.map(p => p.businessId))];
     if (businessIds.length !== 1) {
       return NextResponse.json({ error: 'Cart contains products from multiple vendors – not supported yet' }, { status: 400 });
@@ -76,17 +77,13 @@ export async function POST(req: NextRequest) {
     const businessId = businessIds[0];
 
     const orderNumber = await generateOrderNumber();
-    const tax = 0; // optional: calculate tax
+    const tax = 0;
     const deliveryFee = 0;
     const total = subtotal + tax + deliveryFee;
 
-    // Get session user (if logged in) – optional
-    const session = await getServerSession(authOptions);
-    const userId = session?.user?.id;
+    const userId = session.user.id;
 
-    // Use transaction to ensure all-or-nothing
     const result = await prisma.$transaction(async (tx) => {
-      // Create order
       const order = await tx.order.create({
         data: {
           orderNumber,
@@ -106,7 +103,6 @@ export async function POST(req: NextRequest) {
         },
       });
 
-      // Create order items
       for (const item of orderItemsData) {
         await tx.orderItem.create({
           data: {
@@ -119,11 +115,10 @@ export async function POST(req: NextRequest) {
         });
       }
 
-      // Update stock and create inventory transactions
       for (const update of inventoryUpdates) {
         await tx.product.update({
           where: { id: update.productId },
-          data: { stockQuantity: { decrement: -update.quantity } }, // decrement positive quantity
+          data: { stockQuantity: { decrement: -update.quantity } },
         });
         await tx.inventoryTransaction.create({
           data: {
@@ -140,9 +135,6 @@ export async function POST(req: NextRequest) {
 
       return order;
     });
-
-    // TODO: Trigger real-time notification (WebSocket / WhatsApp) – Step 7
-    // For now, just return success.
 
     return NextResponse.json({
       success: true,

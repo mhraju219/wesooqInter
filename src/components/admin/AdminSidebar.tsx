@@ -11,6 +11,7 @@ import {
   Package,
   ShoppingBag,
   Users,
+  FolderTree,
   Settings,
   LogOut,
 } from 'lucide-react';
@@ -19,25 +20,32 @@ import { signOut } from 'next-auth/react';
 export function AdminSidebar() {
   const pathname = usePathname();
   const { locale } = useLanguage();
+  const isRTL = locale === 'ar';
 
   const navItems = [
-    { href: '/admin', label: locale === 'ar' ? 'لوحة التحكم' : 'Dashboard', icon: LayoutDashboard },
-    { href: '/admin/merchants', label: locale === 'ar' ? 'المتاجر' : 'Merchants', icon: Store },
-    { href: '/admin/catalog', label: locale === 'ar' ? 'الكتالوج' : 'Catalog', icon: Package },
-    { href: '/admin/orders', label: locale === 'ar' ? 'الطلبات' : 'Orders', icon: ShoppingBag },
-    { href: '/admin/users', label: locale === 'ar' ? 'المستخدمين' : 'Users', icon: Users },
-    { href: '/admin/settings', label: locale === 'ar' ? 'الإعدادات' : 'Settings', icon: Settings },
+    { href: '/admin', label: isRTL ? 'لوحة التحكم' : 'Dashboard', icon: LayoutDashboard },
+    { href: '/admin/merchants', label: isRTL ? 'المتاجر' : 'Merchants', icon: Store },
+    { href: '/admin/catalog', label: isRTL ? 'الكتالوج' : 'Catalog', icon: Package },
+    { href: '/admin/categories', label: isRTL ? 'الفئات' : 'Categories', icon: FolderTree },
+    { href: '/admin/orders', label: isRTL ? 'الطلبات' : 'Orders', icon: ShoppingBag },
+    { href: '/admin/users', label: isRTL ? 'المستخدمين' : 'Users', icon: Users },
+    { href: '/admin/settings', label: isRTL ? 'الإعدادات' : 'Settings', icon: Settings },
   ];
+
+  const handleLogout = async () => {
+    await signOut({ callbackUrl: '/' });
+  };
 
   return (
     <aside className="w-64 bg-white dark:bg-gray-900 border-r border-gray-200 dark:border-gray-800 flex flex-col h-screen sticky top-0">
-      <div className="p-6 border-b">
+      <div className="p-6 border-b border-gray-200 dark:border-gray-800">
         <h2 className="text-xl font-bold text-primary">WeSoooq Admin</h2>
-        <p className="text-xs text-gray-500 mt-1">Platform Management</p>
+        <p className="text-xs text-gray-500 mt-1">
+          {isRTL ? 'إدارة المنصة' : 'Platform Management'}
+        </p>
       </div>
-      <nav className="flex-1 py-6 px-3 space-y-1">
+      <nav className="flex-1 py-6 px-3 space-y-1 overflow-y-auto">
         {navItems.map((item) => {
-          // Active logic: Dashboard only when exactly '/admin', others when path starts with href
           const isActive = item.href === '/admin'
             ? pathname === '/admin'
             : pathname.startsWith(`${item.href}/`) || pathname === item.href;
@@ -57,14 +65,14 @@ export function AdminSidebar() {
           );
         })}
       </nav>
-      <div className="p-4 border-t">
+      <div className="p-4 border-t border-gray-200 dark:border-gray-800">
         <Button
           variant="ghost"
-          className="w-full justify-start gap-3 text-red-600"
-          onClick={() => signOut({ callbackUrl: '/' })}
+          className="w-full justify-start gap-3 text-red-600 hover:text-red-700 hover:bg-red-50 dark:hover:bg-red-950/20"
+          onClick={handleLogout}
         >
           <LogOut className="h-5 w-5" />
-          {locale === 'ar' ? 'تسجيل الخروج' : 'Logout'}
+          {isRTL ? 'تسجيل الخروج' : 'Logout'}
         </Button>
       </div>
     </aside>

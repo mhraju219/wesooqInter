@@ -1,42 +1,64 @@
-import { getServerSession } from 'next-auth';
-import { redirect } from 'next/navigation';
-import { authOptions } from '@/app/api/auth/[...nextauth]/route';
-import { prisma } from '@/lib/db/prisma';
-import { UserList } from '@/components/admin/UserList';
-import type { JsonValue } from '@prisma/client/runtime/library';
+"use client";
 
-// Helper to extract business name from JSON
-function getBusinessName(name: JsonValue | null): string {
-  if (!name) return '—';
-  if (typeof name === 'string') return name;
-  if (typeof name === 'object' && name !== null) {
-    const obj = name as Record<string, unknown>;
-    if (typeof obj.en === 'string') return obj.en;
-    if (typeof obj.ar === 'string') return obj.ar;
-    const first = Object.values(obj).find(v => typeof v === 'string');
-    if (first) return first as string;
-  }
-  return '—';
-}
+import { useState } from "react";
+import { useLanguage } from "@/components/providers/language-provider";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Switch } from "@/components/ui/switch";
+import { toast } from "sonner";
+import { format } from "date-fns";
 
-export default async function AdminUsersPage() {
-  const session = await getServerSession(authOptions);
-  if (!session?.user || session.user.role !== 'PLATFORM_ADMIN') redirect('/auth/login');
+export function UserList({ initialUsers }: { initialUsers: any[] }) {
+  const { locale } = useLanguage();
+  const [users, setUsers] = useState(initialUsers);
 
-  const users = await prisma.user.findMany({
-    include: { business: { select: { name: true, slug: true } } },
-    orderBy: { createdAt: 'desc' },
-  });
+  const toggleActive = async (userId: string, currentActive: boolean) => {
+    try {
+      const res = await fetch(`/api/admin/users/${userId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ isActive: !currentActive }),
+      });
+      if (!res.ok) throw new Error();
+      setUsers(users.map(u => u.id === userId ? { ...u, isActive: !currentActive } : u));
+      toast.success(locale === "ar" ? "تم التحديث" : "Updated");
+    } catch (error) {
+      toast.error("Update failed");
+    }
+  };
 
-  const usersForClient = users.map(user => ({
-    id: user.id,
-    email: user.email,
-    fullName: user.fullName,
-    role: user.role,
-    isActive: user.isActive,
-    businessName: user.business ? getBusinessName(user.business.name) : null,
-    createdAt: user.createdAt,
-  }));
-
-  return <UserList initialUsers={usersForClient} />;
+  return (
+    <div className="space-y-6">
+      <h1 className="text-3xl font-bold">{locale === "ar" ? "المستخدمين" : "Users"}</h1>
+      <div className="border rounded-md">
+        <Table>
+          <TableHeader>
+            <TableRow>
+              <TableHead>Email</TableHead>
+              <TableHead>{locale === "ar" ? "الاسم" : "Name"}</TableHead>
+              <TableHead>{locale === "ar" ? "الدور" : "Role"}</TableHead>
+              <TableHead>{locale === "ar" ? "المتجر" : "Business"}</TableHead>
+              <TableHead>{locale === "ar" ? "تاريخ التسجيل" : "Created"}</TableHead>
+              <TableHead>{locale === "ar" ? "الحالة" : "Status"}</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {users.map(user => (
+              <TableRow key={user.id}>
+                <TableCell>{user.email}</TableCell>
+                <TableCell>{user.fullName || "-"}</TableCell>
+                <TableCell><Badge variant="outline">{user.role}</Badge></TableCell>
+                <TableCell>{user.businessName || "-"}</TableCell>
+                <TableCell>{format(new Date(user.createdAt), "dd/MM/yyyy")}</TableCell>
+                <TableCell>
+                  <Switch checked={user.isActive} onCheckedChange={() => toggleActive(user.id, user.isActive)} />
+                </TableCell>
+              </TableRow>
+            ))}
+          </TableBody>
+        </Table>
+      </div>
+    </div>
+  );
 }

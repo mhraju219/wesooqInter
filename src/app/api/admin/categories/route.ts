@@ -1,43 +1,94 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getServerSession } from 'next-auth';
-import { authOptions } from '@/app/api/auth/[...nextauth]/route';
+import { authOptions } from '@/lib/auth';
 import { prisma } from '@/lib/db/prisma';
+import { BusinessCategory } from '@prisma/client';
+
+function generateSlug(name: string): string {
+  return name
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-|-$/g, '');
+}
 
 export async function GET(req: NextRequest) {
-  const session = await getServerSession(authOptions);
-  if (!session?.user || session.user.role !== 'PLATFORM_ADMIN') {
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-  }
+  try {
+    const session = await getServerSession(authOptions);
+    if (!session?.user || session.user.role !== 'PLATFORM_ADMIN') {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
 
-  const categories = await prisma.productCategory.findMany({
-    include: { parent: true, children: true },
-    orderBy: { createdAt: 'desc' },
-  });
-  return NextResponse.json(categories);
+    const categories = await prisma.category.findMany({
+      include: { children: true },
+      orderBy: { createdAt: 'desc' },
+    });
+    return NextResponse.json(categories);
+  } catch (error) {
+    console.error('GET /api/admin/categories error:', error);
+    return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
+  }
 }
 
 export async function POST(req: NextRequest) {
-  const session = await getServerSession(authOptions);
-  if (!session?.user || session.user.role !== 'PLATFORM_ADMIN') {
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+  try {
+    const session = await getServerSession(authOptions);
+    if (!session?.user || session.user.role !== 'PLATFORM_ADMIN') {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+
+    const body = await req.json();
+    const { name, businessCategory, parentId } = body;
+
+    if (!name?.en || !businessCategory) {
+      return NextResponse.json(
+        { error: 'Missing required fields: name.en, businessCategory' },
+        { status: 400 }
+      );
+    }
+
+    // Validate businessCategory against enum
+    if (!Object.values(BusinessCategory).includes(businessCategory)) {
+      return NextResponse.json({ error: 'Invalid business category' }, { status: 400 });
+    }
+
+    const slug = generateSlug(name.en);
+    // Ensure unique slug per businessCategory
+    const existing = await prisma.category.findFirst({
+      where: { slug, businessCategory },
+    });
+    if (existing) {
+      return NextResponse.json(
+        { error: 'Slug already exists for this business category' },
+        { status: 409 }
+      );
+    }
+
+    if (parentId) {
+      const parent = await prisma.category.findUnique({ where: { id: parentId } });
+      if (!parent) {
+        return NextResponse.json({ error: 'Parent category not found' }, { status: 404 });
+      }
+      // Optional: ensure parent belongs to same businessCategory
+      if (parent.businessCategory !== businessCategory) {
+        return NextResponse.json(
+          { error: 'Parent category must belong to the same business category' },
+          { status: 400 }
+        );
+      }
+    }
+
+    const category = await prisma.category.create({
+      data: {
+        name,
+        slug,
+        businessCategory,
+        parentId: parentId || null,
+      },
+    });
+
+    return NextResponse.json(category, { status: 201 });
+  } catch (error: any) {
+    console.error('POST /api/admin/categories error:', error);
+    return NextResponse.json({ error: error.message || 'Internal server error' }, { status: 500 });
   }
-
-  const body = await req.json();
-  const { name, slug, parentId, businessId } = body;
-  if (!name?.en || !slug) {
-    return NextResponse.json({ error: 'Missing required fields' }, { status: 400 });
-  }
-
-  const category = await prisma.productCategory.create({
-    data: {
-      name,
-      slug,
-      parentId,
-      businessId: businessId || 'admin', // For global categories, you may use a dedicated business ID for admin – we can skip businessId for global cats. Simpler: remove businessId requirement for admin categories. We'll set businessId to null? But schema requires it. Let's adjust: For admin categories, we'll set businessId to a special value or allow null? Better: create a system business for admin. But to keep it simple, I'll assume categories are per‑business. For global catalog categories, we can create a dedicated "SYSTEM" business with slug 'system' and hide it from merchants. Alternatively, we remove businessId from Category for admin? That's a schema change. Given time, I'll implement as: categories are per‑business (admin will create categories for each business? Not ideal). Instead, I'll create a system business in seed. Let's do that:
-
-      // In seed, create a system business: slug: 'system', name: 'System', isActive: false, and use its id for global categories.
-      // For now, we'll require businessId in the request. We'll fix in seed.
-    },
-  });
-  return NextResponse.json(category, { status: 201 });
 }
