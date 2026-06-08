@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getServerSession } from 'next-auth';
 import { authOptions } from '@/lib/auth';
 import { prisma } from '@/lib/db/prisma';
-import { BusinessCategory } from '@prisma/client';
+import { Prisma } from '@prisma/client';
 
 function generateSlug(name: string): string {
   return name
@@ -18,14 +18,31 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
 
-    const categories = await prisma.category.findMany({
-      include: { children: true },
-      orderBy: { createdAt: 'desc' },
-    });
+    const searchParams = req.nextUrl.searchParams;
+    const businessCategoryId = searchParams.get('businessCategoryId');
+    const search = searchParams.get('search') || '';
+
+    let conditions = Prisma.sql`"isActive" = true`;
+    if (businessCategoryId && businessCategoryId !== '') {
+      conditions = Prisma.sql`${conditions} AND "businessCategoryId" = ${businessCategoryId}`;
+    }
+    if (search) {
+      conditions = Prisma.sql`${conditions} AND (
+        "name"->>'en' ILIKE ${`%${search}%`}
+        OR "name"->>'ar' ILIKE ${`%${search}%`}
+      )`;
+    }
+
+    const query = Prisma.sql`
+      SELECT * FROM "Category"
+      WHERE ${conditions}
+      ORDER BY "createdAt" DESC
+    `;
+    const categories = await prisma.$queryRaw<any[]>(query);
     return NextResponse.json(categories);
-  } catch (error) {
+  } catch (error: any) {
     console.error('GET /api/admin/categories error:', error);
-    return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
+    return NextResponse.json({ error: error.message || 'Internal server error' }, { status: 500 });
   }
 }
 
@@ -37,24 +54,26 @@ export async function POST(req: NextRequest) {
     }
 
     const body = await req.json();
-    const { name, businessCategory, parentId } = body;
+    const { name, businessCategoryId, parentId } = body;
 
-    if (!name?.en || !businessCategory) {
+    if (!name?.en || !businessCategoryId) {
       return NextResponse.json(
-        { error: 'Missing required fields: name.en, businessCategory' },
+        { error: 'Missing required fields: name.en, businessCategoryId' },
         { status: 400 }
       );
     }
 
-    // Validate businessCategory against enum
-    if (!Object.values(BusinessCategory).includes(businessCategory)) {
-      return NextResponse.json({ error: 'Invalid business category' }, { status: 400 });
+    // Verify that the business category exists
+    const bizCat = await prisma.businessCategory.findUnique({
+      where: { id: businessCategoryId },
+    });
+    if (!bizCat) {
+      return NextResponse.json({ error: 'Business category not found' }, { status: 404 });
     }
 
     const slug = generateSlug(name.en);
-    // Ensure unique slug per businessCategory
     const existing = await prisma.category.findFirst({
-      where: { slug, businessCategory },
+      where: { slug, businessCategoryId },
     });
     if (existing) {
       return NextResponse.json(
@@ -63,29 +82,14 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    if (parentId) {
-      const parent = await prisma.category.findUnique({ where: { id: parentId } });
-      if (!parent) {
-        return NextResponse.json({ error: 'Parent category not found' }, { status: 404 });
-      }
-      // Optional: ensure parent belongs to same businessCategory
-      if (parent.businessCategory !== businessCategory) {
-        return NextResponse.json(
-          { error: 'Parent category must belong to the same business category' },
-          { status: 400 }
-        );
-      }
-    }
-
     const category = await prisma.category.create({
       data: {
         name,
         slug,
-        businessCategory,
+        businessCategoryId,
         parentId: parentId || null,
       },
     });
-
     return NextResponse.json(category, { status: 201 });
   } catch (error: any) {
     console.error('POST /api/admin/categories error:', error);

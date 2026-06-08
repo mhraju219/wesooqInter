@@ -1,5 +1,4 @@
 import { prisma } from '@/lib/db/prisma';
-import { BusinessCategory } from '@prisma/client';
 import { VendorCard } from '@/components/marketplace/VendorCard';
 import { CarouselSection } from '@/components/marketplace/CarouselSection';
 import type { JsonValue } from '@prisma/client/runtime/library';
@@ -18,78 +17,88 @@ function getDisplayName(name: JsonValue | null): string {
   return 'Business';
 }
 
+// Helper to extract category name
+function getCategoryName(name: JsonValue | null): string {
+  if (!name) return 'Other';
+  if (typeof name === 'string') return name;
+  if (typeof name === 'object' && name !== null) {
+    const obj = name as Record<string, unknown>;
+    if (typeof obj.en === 'string') return obj.en;
+    if (typeof obj.ar === 'string') return obj.ar;
+    const first = Object.values(obj).find(v => typeof v === 'string');
+    if (first) return first as string;
+  }
+  return 'Other';
+}
+
 async function getBusinessesWithFeaturedItems() {
+  // Fetch all active businesses with their category and inventory products (for product-based businesses)
   const businesses = await prisma.business.findMany({
     where: { isActive: true },
-    select: {
-      id: true,
-      slug: true,
-      name: true,
-      category: true,
-      logo: true,
-      coverImage: true,
-      contactPhone: true,
+    include: {
+      businessCategory: true,
+      products: {
+        where: { isActive: true, availableOnline: true, stockQuantity: { gt: 0 } },
+        include: {
+          catalogProduct: true,
+        },
+        take: 3,
+        orderBy: { createdAt: 'desc' },
+      },
+      services: {
+        where: { isActive: true },
+        take: 3,
+        orderBy: { createdAt: 'desc' },
+      },
     },
-    orderBy: { createdAt: 'desc' },
   });
 
-  const businessesWithFeatured = await Promise.all(
-    businesses.map(async (business) => {
-      if (
-        business.category === BusinessCategory.SUPERMARKET ||
-        business.category === BusinessCategory.RESTAURANT ||
-        business.category === BusinessCategory.ELECTRONICS
-      ) {
-        // Fetch featured products via inventory (Product) + catalogProduct
-        const inventoryItems = await prisma.product.findMany({
-          where: { businessId: business.id, isActive: true, availableOnline: true },
-          select: {
-            id: true,
-            sellingPrice: true,
-            stockQuantity: true,
-            catalogProduct: {
-              select: { name: true, images: true, barcode: true }
-            }
-          },
-          take: 3,
-          orderBy: { createdAt: 'desc' },
-        });
+  // For each business, shape featuredProducts and featuredServices
+  const businessesWithFeatured = businesses.map((business) => {
+    let featuredProducts: any[] = [];
+    let featuredServices: any[] = [];
+    // Assume hospital slugs are 'hospital' or any category that is service-only. We can also detect by existence of services or products.
+    // For simplicity, we treat businesses that have services (and not products) as service providers. But better: check category slug.
+    const isServiceProvider = business.businessCategory?.slug === 'hospital'; // adjust as needed
+    if (!isServiceProvider) {
+      featuredProducts = business.products.map(p => ({
+        id: p.id,
+        name: p.catalogProduct.name,
+        price: Number(p.sellingPrice),
+        images: p.catalogProduct.images,
+      }));
+    } else {
+      featuredServices = business.services.map(s => ({
+        id: s.id,
+        name: s.name,
+        price: Number(s.price),
+        durationMins: s.durationMins,
+      }));
+    }
+    return {
+      ...business,
+      featuredProducts,
+      featuredServices,
+    };
+  });
 
-        const featuredProducts = inventoryItems.map(item => ({
-          id: item.id,
-          name: item.catalogProduct.name,
-          price: Number(item.sellingPrice),
-          images: item.catalogProduct.images,
-        }));
-        return { ...business, featuredProducts, featuredServices: [] };
-      } else if (business.category === BusinessCategory.HOSPITAL) {
-        const featuredServices = await prisma.service.findMany({
-          where: { businessId: business.id, isActive: true },
-          select: { id: true, name: true, price: true, durationMins: true },
-          take: 3,
-          orderBy: { createdAt: 'desc' },
-        });
-        const servicesWithNames = featuredServices.map(s => ({
-          ...s,
-          name: getDisplayName(s.name),
-          price: Number(s.price),
-        }));
-        return { ...business, featuredProducts: [], featuredServices: servicesWithNames };
-      }
-      return { ...business, featuredProducts: [], featuredServices: [] };
-    })
-  );
-
-  return {
-    [BusinessCategory.HOSPITAL]: businessesWithFeatured.filter(b => b.category === BusinessCategory.HOSPITAL),
-    [BusinessCategory.SUPERMARKET]: businessesWithFeatured.filter(b => b.category === BusinessCategory.SUPERMARKET),
-    [BusinessCategory.RESTAURANT]: businessesWithFeatured.filter(b => b.category === BusinessCategory.RESTAURANT),
-    [BusinessCategory.ELECTRONICS]: businessesWithFeatured.filter(b => b.category === BusinessCategory.ELECTRONICS),
-  };
+  // Group by businessCategoryId
+  const grouped: Record<string, any[]> = {};
+  for (const business of businessesWithFeatured) {
+    const catId = business.businessCategoryId;
+    if (!grouped[catId]) grouped[catId] = [];
+    grouped[catId].push(business);
+  }
+  // Fetch all active business categories
+  const categories = await prisma.businessCategory.findMany({
+    where: { isActive: true },
+    orderBy: { createdAt: 'asc' },
+  });
+  return { grouped, categories };
 }
 
 export default async function HomePage() {
-  const grouped = await getBusinessesWithFeaturedItems();
+  const { grouped, categories } = await getBusinessesWithFeaturedItems();
 
   return (
     <div className="min-h-screen bg-gradient-to-b from-slate-50 to-white dark:from-slate-950 dark:to-slate-900">
@@ -101,12 +110,20 @@ export default async function HomePage() {
           </p>
         </div>
       </section>
-
       <div className="container mx-auto py-12 space-y-16">
-        <CarouselSection title="Hospitals & Clinics" businesses={grouped.HOSPITAL} variant="hospital" />
-        <CarouselSection title="Supermarkets" businesses={grouped.SUPERMARKET} variant="supermarket" />
-        <CarouselSection title="Restaurants" businesses={grouped.RESTAURANT} variant="restaurant" />
-        <CarouselSection title="Electronics Shops" businesses={grouped.ELECTRONICS} variant="electronics" />
+        {categories.map(category => {
+          const businesses = grouped[category.id] || [];
+          const categoryName = getCategoryName(category.name);
+          const variant = category.slug; // e.g., 'hospital', 'supermarket', etc.
+          return (
+            <CarouselSection
+              key={category.id}
+              title={categoryName}
+              businesses={businesses}
+              variant={variant}
+            />
+          );
+        })}
       </div>
     </div>
   );

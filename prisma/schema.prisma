@@ -9,35 +9,6 @@ generator client {
   provider = "prisma-client-js"
 }
 
-// ========== ENUMS ==========
-enum BusinessCategory {
-  HOSPITAL
-  SUPERMARKET
-  RESTAURANT
-  ELECTRONICS
-  FLOWER_SHOP        // new
-  MOBILE_ACCESSORIES // new
-  VEHICLES           // new
-  // add more as needed
-}
-
-model Category {
-  id              String         @id @default(cuid())
-  name            Json           // { en: "Dairy", ar: "ألبان" }
-  slug            String         @unique
-  businessCategory BusinessCategory  // which merchant type this category belongs to
-  parentId        String?        @map("parent_id")
-  parent          Category?      @relation("CategoryHierarchy", fields: [parentId], references: [id])
-  children        Category[]     @relation("CategoryHierarchy")
-  isActive        Boolean        @default(true)
-  createdAt       DateTime       @default(now())
-  updatedAt       DateTime       @updatedAt
-
-  catalogProducts CatalogProduct[]
-
-  @@unique([businessCategory, slug])  // unique per business category
-  @@index([businessCategory])
-}
 
 enum UserRole {
   PLATFORM_ADMIN
@@ -84,41 +55,80 @@ enum InventoryTransactionType {
   WASTAGE
 }
 
-// ========== MULTI-TENANT CORE ==========
+model Category {
+  id          String    @id @default(cuid())
+  name        Json
+  slug        String    @unique
+  businessCategoryId String
+  businessCategory   BusinessCategory @relation(fields: [businessCategoryId], references: [id])
+  parentId    String?   @map("parent_id")
+  parent      Category? @relation("CategoryHierarchy", fields: [parentId], references: [id])
+  children    Category[] @relation("CategoryHierarchy")
+  isActive    Boolean   @default(true)
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  catalogProducts CatalogProduct[]
+
+  @@unique([businessCategoryId, slug])
+  @@index([businessCategoryId])
+}
+
+
+
+// ========== BUSINESS CATEGORY MODEL ==========
+model BusinessCategory {
+  id          String    @id @default(cuid())
+  name        Json      // { en: "Supermarket", ar: "سوبر ماركت" }
+  slug        String    @unique
+  isActive    Boolean   @default(true)
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  businesses  Business[]
+  catalogProducts CatalogProduct[]
+  categories  Category[]
+}
+
+
+
+
+// Update Business model
 model Business {
-  id              String          @id @default(cuid())
-  slug            String          @unique
+  id              String    @id @default(cuid())
+  slug            String    @unique
   name            Json
-  category        BusinessCategory
+  businessCategoryId String
+  businessCategory   BusinessCategory @relation(fields: [businessCategoryId], references: [id])
   logo            String?
   coverImage      String?
   contactEmail    String?
   contactPhone    String?
   address         Json?
-  timezone        String          @default("UTC")
-  currencyCode    String          @default("USD")
-  isActive        Boolean         @default(true)
+  timezone        String    @default("UTC")
+  currencyCode    String    @default("USD")
+  isActive        Boolean   @default(true)
   settings        Json?
-  createdAt       DateTime        @default(now())
-  updatedAt       DateTime        @updatedAt
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
 
+  // Reverse relations (add these lines)
   users           User[]
-  products        Product[]          // inventory items
+  productCategories ProductCategory[]
+  products        Product[]
   orders          Order[]
-  appointments    Appointment[]
   services        Service[]
+  appointments    Appointment[]
   suppliers       Supplier[]
+  purchaseOrders  PurchaseOrder[]
   payrolls        Payroll[]
   tasks           Task[]
   ledgerEntries   LedgerEntry[]
-  productCategories ProductCategory[]
-  purchaseOrders  PurchaseOrder[]
   notificationLogs NotificationLog[]
-  counters        BusinessCounter[]    // For Product Inventory
-
-  @@index([category])
-  @@index([slug])
+  counters        BusinessCounter[]
 }
+
+
+
 
 // ========== USER & RBAC ==========
 model User {
@@ -161,23 +171,22 @@ model ProductCategory {
   createdAt   DateTime  @default(now())
   updatedAt   DateTime  @updatedAt
 
-  // REMOVE this line: catalogProducts CatalogProduct[]
-  // We no longer need it because CatalogProduct uses a direct enum category
+  // remove this line → catalogProducts CatalogProduct[]
 
   @@unique([businessId, slug])
   @@index([businessId])
 }
 
-// ========== GLOBAL CATALOG PRODUCT ==========
+// Update CatalogProduct
 model CatalogProduct {
   id          String    @id @default(cuid())
   barcode     String    @unique
   name        Json
   description Json?
-  category    BusinessCategory   // main business category (enum)
-  // 👇 new field
-  categoryId  String?   @map("category_id")
-  categoryRel Category? @relation(fields: [categoryId], references: [id])
+  businessCategoryId String
+  businessCategory   BusinessCategory @relation(fields: [businessCategoryId], references: [id])
+  categoryId  String?   // this references Category, not ProductCategory
+  category    Category? @relation(fields: [categoryId], references: [id])
   images      String[]
   isActive    Boolean   @default(true)
   createdAt   DateTime  @default(now())
@@ -185,14 +194,6 @@ model CatalogProduct {
 
   inventory   Product[]
 }
-
-model BusinessCounter {
-  businessId     String   @id
-  business       Business @relation(fields: [businessId], references: [id], onDelete: Cascade)
-  nextProductSku Int      @default(1001)
-}
-
-
 
 // ========== MERCHANT INVENTORY (LINKED TO CATALOG) ==========
 model Product {
@@ -450,4 +451,11 @@ model NotificationLog {
   sentAt      DateTime  @default(now())
 
   @@index([businessId, sentAt(sort: Desc)])
+}
+
+// ========== BUSINESS COUNTER (for SKU) ==========
+model BusinessCounter {
+  businessId     String   @id
+  business       Business @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  nextProductSku Int      @default(1001)
 }

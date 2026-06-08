@@ -9,7 +9,7 @@ import { VendorCard } from './VendorCard';
 interface CarouselSectionProps {
   title: string;
   businesses: any[];
-  variant: 'hospital' | 'supermarket' | 'restaurant' | 'electronics';
+  variant: string;
 }
 
 export function CarouselSection({ title, businesses, variant }: CarouselSectionProps) {
